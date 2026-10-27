@@ -1,0 +1,29 @@
+[
+  {
+    "id": "qwen3-0.6b-q4-k-m",
+    "name": "Qwen3 0.6B Q4_K_M",
+    "ramTierGb": 6,
+    "sizeBytes": 500000000,
+    "url": "",
+    "sha256": "",
+    "capabilities": ["chat", "tools", "completion"]
+  },
+  {
+    "id": "qwen3-4b-q4-k-m",
+    "name": "Qwen3 4B Q4_K_M",
+    "ramTierGb": 8,
+    "sizeBytes": 2497000000,
+    "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+    "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+    "capabilities": ["chat", "tools", "completion", "embedding"]
+  },
+  {
+    "id": "qwen3-8b-q4-k-m",
+    "name": "Qwen3 8B Q4_K_M (experimental)",
+    "ramTierGb": 16,
+    "sizeBytes": 5030000000,
+    "url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+    "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+    "capabilities": ["chat", "tools", "completion", "embedding"]
+  }
+]
