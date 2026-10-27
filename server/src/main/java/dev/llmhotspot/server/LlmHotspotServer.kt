@@ -4,8 +4,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
+import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
-import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.header
@@ -30,22 +30,24 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 class LlmHotspotServer(
-    private val engine: InferenceEngine,
+    private val inferenceEngine: InferenceEngine,
     initialApiKey: String,
     private val onTokens: (Int) -> Unit = {},
     private val isAcceptingRequests: () -> Boolean = { true },
 ) {
     private val key = AtomicReference(initialApiKey)
-    private var server: ApplicationEngine? = null
+    private var stopServer: (() -> Unit)? = null
 
     fun start(bindHost: String, port: Int) {
-        check(server == null) { "Server is already running" }
-        server = embeddedServer(CIO, host = bindHost, port = port) { module() }.start(wait = false)
+        check(stopServer == null) { "Server is already running" }
+        val embedded = embeddedServer(CIO, host = bindHost, port = port) { module() }
+        embedded.start(wait = false)
+        stopServer = { embedded.stop(500, 2_000) }
     }
 
     fun stop() {
-        server?.stop(500, 2_000)
-        server = null
+        stopServer?.invoke()
+        stopServer = null
     }
 
     fun rotateKey(newKey: String) { key.set(newKey) }
@@ -57,12 +59,12 @@ class LlmHotspotServer(
         routing {
             get("/") { call.respondText(LandingPage.html, ContentType.Text.Html) }
             get("/health") {
-                call.respond(mapOf("status" to if (engine.modelId == null) "loading" else "ready"))
+                call.respond(mapOf("status" to if (inferenceEngine.modelId == null) "loading" else "ready"))
             }
             route("/v1") {
                 get("/models") {
                     if (!call.authorized()) return@get
-                    val model = engine.modelId
+                    val model = inferenceEngine.modelId
                     call.respond(ModelsResponse(data = if (model == null) emptyList() else listOf(ModelInfo(model))))
                 }
                 post("/chat/completions") {
@@ -74,7 +76,7 @@ class LlmHotspotServer(
                         call.respondTextWriter(ContentType.Text.EventStream) {
                             val id = "chatcmpl-${UUID.randomUUID()}"
                             if (request.tools != null) {
-                                val result = engine.complete(prompt, null, options)
+                                val result = inferenceEngine.complete(prompt, null, options)
                                 onTokens(result.generatedTokens)
                                 val calls = ToolCallParser.parse(result.text)
                                 if (calls.isNotEmpty()) {
@@ -87,7 +89,7 @@ class LlmHotspotServer(
                                     write("data: {\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"model\":${Json.encodeToString(request.model)},\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
                                 }
                             } else {
-                                engine.stream(prompt, null, options).collect { token ->
+                                inferenceEngine.stream(prompt, null, options).collect { token ->
                                     onTokens(1)
                                     val escaped = Json.encodeToString(token)
                                     write("data: {\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"model\":${Json.encodeToString(request.model)},\"choices\":[{\"index\":0,\"delta\":{\"content\":$escaped},\"finish_reason\":null}]}\n\n")
@@ -98,12 +100,12 @@ class LlmHotspotServer(
                             write("data: [DONE]\n\n")
                         }
                     } else {
-                        val result = engine.complete(prompt, null, options)
+                        val result = inferenceEngine.complete(prompt, null, options)
                         onTokens(result.generatedTokens)
                         val toolCalls = ToolCallParser.parse(result.text).takeIf { it.isNotEmpty() }
                         call.respond(ChatCompletionResponse(
                             id = "chatcmpl-${UUID.randomUUID()}",
-                            model = engine.modelId ?: request.model,
+                            model = inferenceEngine.modelId ?: request.model,
                             choices = listOf(ChatChoice(
                                 message = ChatMessage("assistant", if (toolCalls == null) result.text else null, toolCalls = toolCalls),
                                 finishReason = if (toolCalls == null) "stop" else "tool_calls",
@@ -119,7 +121,7 @@ class LlmHotspotServer(
                     if (request.stream) {
                         call.respondTextWriter(ContentType.Text.EventStream) {
                             val id = "cmpl-${UUID.randomUUID()}"
-                            engine.stream(request.prompt, request.suffix, options).collect { token ->
+                            inferenceEngine.stream(request.prompt, request.suffix, options).collect { token ->
                                 onTokens(1)
                                 write("data: {\"id\":\"$id\",\"object\":\"text_completion\",\"model\":${Json.encodeToString(request.model)},\"choices\":[{\"text\":${Json.encodeToString(token)},\"index\":0,\"finish_reason\":null}]}\n\n")
                                 flush()
@@ -127,11 +129,11 @@ class LlmHotspotServer(
                             write("data: [DONE]\n\n")
                         }
                     } else {
-                        val result = engine.complete(request.prompt, request.suffix, options)
+                        val result = inferenceEngine.complete(request.prompt, request.suffix, options)
                         onTokens(result.generatedTokens)
                         call.respond(CompletionResponse(
                             id = "cmpl-${UUID.randomUUID()}",
-                            model = engine.modelId ?: request.model,
+                            model = inferenceEngine.modelId ?: request.model,
                             choices = listOf(CompletionChoice(result.text)),
                             usage = Usage(result.promptTokens, result.generatedTokens),
                         ))
@@ -149,8 +151,8 @@ class LlmHotspotServer(
                         call.respond(HttpStatusCode.BadRequest, ApiErrorEnvelope(ApiError("input must be a string or array of strings", "invalid_request_error")))
                         return@post
                     }
-                    val data = inputs.mapIndexed { index, input -> EmbeddingData(engine.embed(input), index) }
-                    call.respond(EmbeddingResponse(model = engine.modelId ?: request.model, data = data, usage = Usage(inputs.sumOf { it.length / 4 }, 0)))
+                    val data = inputs.mapIndexed { index, input -> EmbeddingData(inferenceEngine.embed(input), index) }
+                    call.respond(EmbeddingResponse(model = inferenceEngine.modelId ?: request.model, data = data, usage = Usage(inputs.sumOf { it.length / 4 }, 0)))
                 }
             }
         }
@@ -169,7 +171,7 @@ class LlmHotspotServer(
             respond(HttpStatusCode.ServiceUnavailable, ApiErrorEnvelope(ApiError("Inference paused by battery or thermal guardrail", "service_unavailable")))
             return false
         }
-        if (engine.modelId != null) return true
+        if (inferenceEngine.modelId != null) return true
         respond(HttpStatusCode.ServiceUnavailable, ApiErrorEnvelope(ApiError("No model is loaded", "service_unavailable")))
         return false
     }

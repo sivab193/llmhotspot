@@ -87,7 +87,7 @@ class HotspotService : Service() {
         val contextSize = prefs.getInt("context_size", 8192)
         engine.load(path, contextSize).getOrElse { return fail(it.message ?: "Model load failed") }
         val apiServer = LlmHotspotServer(
-            engine = engine,
+            inferenceEngine = engine,
             initialApiKey = key,
             onTokens = { count -> AppRuntime.update { it.copy(tokensServed = it.tokensServed + count) } },
             isAcceptingRequests = { AppRuntime.state.value.status == RunStatus.RUNNING },
